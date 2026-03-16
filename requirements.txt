@@ -1,0 +1,8 @@
+# PyGIS Sewer Viewer - 依賴清單
+# 安裝方式: pip install -r requirements.txt
+
+PyQt6==6.7.0
+PyQt6-WebEngine==6.7.0
+geopandas==0.14.4
+pyproj==3.6.1
+matplotlib==3.8.3

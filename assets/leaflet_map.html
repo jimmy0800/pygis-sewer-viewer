@@ -1,0 +1,360 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PyGIS Sewer Viewer</title>
+    
+    <!-- Leaflet CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        html, body {
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background: #1E1E1E;
+        }
+        
+        #map {
+            width: 100%;
+            height: 100%;
+            background: #1E1E1E;
+        }
+        
+        /* 自定義 Popup 樣式 */
+        .leaflet-popup-content-wrapper {
+            background: #252526;
+            color: #D4D4D4;
+            border-radius: 4px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+        }
+        
+        .leaflet-popup-tip {
+            background: #252526;
+        }
+        
+        .leaflet-popup-content {
+            margin: 8px 12px;
+            font-size: 12px;
+        }
+        
+        .leaflet-popup-content b {
+            color: #4EC9B0;
+            display: block;
+            margin-bottom: 4px;
+            border-bottom: 1px solid #3C3C3C;
+            padding-bottom: 4px;
+        }
+        
+        .leaflet-popup-content table {
+            width: 100%;
+        }
+        
+        .leaflet-popup-content td {
+            padding: 2px 4px;
+        }
+        
+        .leaflet-popup-content td:first-child {
+            color: #9CDCFE;
+            width: 40%;
+        }
+        
+        /* Google Maps 圖層版權 */
+        .leaflet-control-attribution {
+            background: rgba(30,30,30,0.8) !important;
+            color: #888 !important;
+            font-size: 10px;
+        }
+        
+        .leaflet-control-attribution a {
+            color: #569CD6 !important;
+        }
+    </style>
+</head>
+<body>
+    <div id="map"></div>
+
+    <!-- Leaflet JS -->
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <!-- QWebChannel JS -->
+    <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
+
+    <script>
+        // 全域變數
+        let map;
+        let layers = {};
+        let currentBaseLayer = null;
+        let jsBridge = null;
+
+        // 底圖定義
+        const baseLayers = {
+            'osm': {
+                name: 'OpenStreetMap',
+                url: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+                options: {
+                    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+                }
+            },
+            'google-street': {
+                name: 'Google Maps 街道',
+                url: 'https://mt1.google.com/vt/lyrs=m&x={x}&y={y}&z={z}',
+                options: {
+                    attribution: '&copy; Google'
+                }
+            },
+            'google-satellite': {
+ name: 'Google Maps 衛星',
+                url: 'https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}',
+                options: {
+                    attribution: '&copy; Google'
+                }
+            }
+        };
+
+        // 初始化地圖
+        function initMap() {
+            // 預設中心點（台灣）
+            map = L.map('map', {
+                center: [25.033, 121.565],
+                zoom: 12,
+                zoomControl: true,
+                attributionControl: true
+            });
+
+            // 預設使用 OSM
+            switchBaseLayer('osm');
+
+            // 初始化 QWebChannel
+            initWebChannel();
+
+            // 監聽地圖點擊
+            map.on('click', onMapClick);
+            
+            // 監聽滑鼠移動
+            map.on('mousemove', onMouseMove);
+        }
+
+        // 初始化 WebChannel
+        function initWebChannel() {
+            if (typeof QWebChannel === 'undefined') {
+                console.warn('QWebChannel not available');
+                return;
+            }
+
+            new QWebChannel(qt.webChannelTransport, function(channel) {
+                jsBridge = channel.objects.pybridge;
+                console.log('QWebChannel connected');
+                
+                // 通知 Python 端準備好
+                if (jsBridge && jsBridge.onMapReady) {
+                    jsBridge.onMapReady();
+                }
+            });
+        }
+
+        // 切換底圖
+        function switchBaseLayer(layerId) {
+            if (currentBaseLayer) {
+                map.removeLayer(currentBaseLayer);
+            }
+
+            const layerDef = baseLayers[layerId];
+            if (layerDef) {
+                currentBaseLayer = L.tileLayer(layerDef.url, layerDef.options).addTo(map);
+            }
+        }
+
+        // 取得目前底圖 ID
+        function getCurrentBaseLayer() {
+            for (const [id, def] of Object.entries(baseLayers)) {
+                if (currentBaseLayer === map.layers?.find(l => l === currentBaseLayer)) {
+                    return id;
+                }
+            }
+            return 'osm';
+        }
+
+        // 新增 GeoJSON 圖層
+        function addGeoJSONLayer(layerId, geojson, visible = true) {
+            // 移除已存在的圖層
+            if (layers[layerId]) {
+                map.removeLayer(layers[layerId]);
+            }
+
+            const geojsonLayer = L.geoJSON(JSON.parse(geojson), {
+                pointToLayer: function(geojson, latlng) {
+                    const style = geojson.properties?.style || geojson.style || {};
+                    return L.circleMarker(latlng, {
+                        radius: 8,
+                        fillColor: style.color || '#2D8C4E',
+                        color: '#ffffff',
+                        weight: 1,
+                        opacity: 1,
+                        fillOpacity: 0.8
+                    });
+                },
+                style: function(feature) {
+                    const style = feature.properties?.style || feature.style || {};
+                    return {
+                        color: style.color || '#569CD6',
+                        weight: style.weight || 3,
+                        opacity: 0.9
+                    };
+                },
+                onEachFeature: function(feature, layer) {
+                    layer.on({
+                        click: function(e) {
+                            e.originalEvent.stopPropagation();
+                            showFeaturePopup(feature, layer);
+                        }
+                    });
+                }
+            });
+
+            if (visible) {
+                geojsonLayer.addTo(map);
+            }
+
+            layers[layerId] = geojsonLayer;
+            return geojsonLayer;
+        }
+
+        // 顯示圖層 Popup
+        function showFeaturePopup(feature, layer) {
+            const props = feature.properties;
+            if (!props) return;
+
+            // 建立 Popup 內容
+            let content = '<table>';
+            const importantFields = ['名稱', 'NAME', '編號', 'ID', 'TYPE', '類型'];
+            
+            for (const [key, value] of Object.entries(props)) {
+                if (key === 'style' || key === 'geometry') continue;
+                content += `<tr><td>${key}</td><td>${value !== null ? value : '-'}</td></tr>`;
+            }
+            content += '</table>';
+
+            layer.bindPopup(content).openPopup();
+
+            // 通知 Python 端
+            if (jsBridge && jsBridge.onFeatureClick) {
+                jsBridge.onFeatureClick(JSON.stringify(props));
+            }
+        }
+
+        // 圖層顯示/隱藏
+        function toggleLayerVisibility(layerId, visible) {
+            if (layers[layerId]) {
+                if (visible) {
+                    map.addLayer(layers[layerId]);
+                } else {
+                    map.removeLayer(layers[layerId]);
+                }
+            }
+        }
+
+        // 移除圖層
+        function removeLayer(layerId) {
+            if (layers[layerId]) {
+                map.removeLayer(layers[layerId]);
+                delete layers[layerId];
+            }
+        }
+
+        // 全圖適應
+        function fitBounds(layerId) {
+            if (layers[layerId]) {
+                map.fitBounds(layers[layerId].getBounds());
+            }
+        }
+
+        // 全圖適應所有圖層
+        function fitAllLayers() {
+            const allBounds = [];
+            for (const layer of Object.values(layers)) {
+                if (layer.getBounds) {
+                    allBounds.push(layer.getBounds());
+                }
+            }
+            if (allBounds.length > 0) {
+                const combinedBounds = L.latLngBounds(allBounds);
+                map.fitBounds(combinedBounds);
+            }
+        }
+
+        // 地圖點擊事件
+        function onMapClick(e) {
+            if (jsBridge && jsBridge.onMapClick) {
+                jsBridge.onMapClick({
+                    lat: e.latlng.lat,
+                    lng: e.latlng.lng
+                });
+            }
+        }
+
+        // 滑鼠移動事件
+        function onMouseMove(e) {
+            if (jsBridge && jsBridge.onMouseMove) {
+                jsBridge.onMouseMove({
+                    lat: e.latlng.lat,
+                    lng: e.latlng.lng
+                });
+            }
+        }
+
+        // 更新圖層樣式
+        function updateLayerStyle(layerId, geojson) {
+            const layer = layers[layerId];
+            if (!layer) return;
+
+            const newData = JSON.parse(geojson);
+            
+            // 清除舊圖層
+            map.removeLayer(layer);
+            
+            // 重新建立圖層
+            const newLayer = L.geoJSON(newData, {
+                pointToLayer: function(geojson, latlng) {
+                    const style = geojson.properties?.style || geojson.style || {};
+                    return L.circleMarker(latlng, {
+                        radius: 8,
+                        fillColor: style.color || '#2D8C4E',
+                        color: '#ffffff',
+                        weight: 1,
+                        opacity: 1,
+                        fillOpacity: 0.8
+                    });
+                },
+                style: function(feature) {
+                    const style = feature.properties?.style || feature.style || {};
+                    return {
+                        color: style.color || '#569CD6',
+                        weight: style.weight || 3,
+                        opacity: 0.9
+                    };
+                },
+                onEachFeature: function(feature, layer) {
+                    layer.on({
+                        click: function(e) {
+                            e.originalEvent.stopPropagation();
+                            showFeaturePopup(feature, layer);
+                        }
+                    });
+                }
+            }).addTo(map);
+            
+            layers[layerId] = newLayer;
+        }
+
+        // 頁面載入完成後初始化
+        document.addEventListener('DOMContentLoaded', initMap);
+    </script>
+</body>
+</html>
